@@ -4,6 +4,8 @@ from time import time
 import sys
 sys.path.insert(0, '../')
 from mdrnn import multi_dimensional_rnn_while_loop
+from rnn2d import two_dimensional_rnn
+from lstm2d import TwoDimensionalLSTMCell
 
 import numpy as np
 import tensorflow.contrib.slim as slim
@@ -52,14 +54,15 @@ def run(m_id):
     x = tf.placeholder(tf.float32, [batch_size, h, w, channels])
     y = tf.placeholder(tf.float32, [batch_size, h, w, channels])
 
-    hidden_size = 4
+    hidden_size = 12
     if use_multi_dimensional_lstm:
         print('Using Multi Dimensional LSTM !')
         rnn_out, _ = multi_dimensional_rnn_while_loop(
             rnn_size=hidden_size, input_data=x, sh=[1, 1])
     else:
-        print('Using Standard LSTM !')
-        rnn_out = standard_lstm(input_data=x, rnn_size=hidden_size)
+        print "Using custom implementation!"
+        rnn_out, _ = two_dimensional_rnn(TwoDimensionalLSTMCell(
+            hidden_size), inputs=x, sequence_shape=(1, 1), dtype=tf.float32)
 
     model_out = slim.fully_connected(inputs=rnn_out,
                                      num_outputs=1,
@@ -91,7 +94,7 @@ def run(m_id):
             pass
 
         loss_val, _ = sess.run([loss, grad_update], feed_dict={
-                               x: batch_x, y: batch_y})
+            x: batch_x, y: batch_y})
         print('steps = {0} | loss = {1:.3f} | time {2:.3f}'.format(str(i).zfill(3),
                                                                    loss_val,
                                                                    time() - st))
