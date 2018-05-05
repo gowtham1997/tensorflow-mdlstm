@@ -1,0 +1,4 @@
+*.pyc
+ref/
+.DS_Store
+**/Tensorboard_out/
