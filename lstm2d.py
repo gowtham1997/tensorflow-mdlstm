@@ -5,6 +5,8 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.framework import constant_op
+from tensorflow.python.layers import base as base_layer
+
 
 _BIAS_VARIABLE_NAME = "bias"
 _WEIGHTS_VARIABLE_NAME = "kernel"
@@ -14,7 +16,7 @@ _WEIGHTS_VARIABLE_NAME = "kernel"
 # https://github.com/philipperemy/tensorflow-multi-dimensional-lstm/blob/master/md_lstm.py
 
 
-class 2DLSTMCell(LayerRNNCell):
+class TwoDimensionalLSTMCell(LayerRNNCell):
     """
     Two Dimensional LSTM recurrent network cell.
     The implementation is based on: https://arxiv.org/pdf/0705.2011.pdf.
@@ -43,7 +45,7 @@ class 2DLSTMCell(LayerRNNCell):
           When restoring from CudnnLSTM-trained checkpoints, must use
           `CudnnCompatibleLSTMCell` instead.
         """
-        super(2DLSTMCell, self).__init__(_reuse=reuse, name=name)
+        super(TwoDimensionalLSTMCell, self).__init__(_reuse=reuse, name=name)
         self.input_spec = base_layer.InputSpec(ndim=2)
 
         self._num_units = num_units

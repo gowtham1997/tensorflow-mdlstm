@@ -7,15 +7,13 @@ from tensorflow.python.ops.rnn import _best_effort_input_batch_size
 from mdlstm import MDLSTMCell
 
 
-# WORK IN PROGRESS!
-
 # Based on dynamic_rnn in https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/ops/rnn.py
 # as well as
 # https://github.com/philipperemy/tensorflow-multi-dimensional-lstm/blob/master/md_lstm.py
 
 
-def multi_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=None, dimensions=2,
-                          dtype=None, parallel_iterations=None, scope=None, reverse_dims=None):
+def two_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=None,
+                        dtype=None, parallel_iterations=None, scope=None, reverse_dims=None):
     """Creates a 2D recurrent neural network specified by 2D RNN `cell`.
     Performs fully dynamic unrolling of `inputs`.
 
@@ -54,6 +52,7 @@ def multi_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=Non
 
     # TODO: Assert cell type
     with tf.variable_scope(scope or "2d-rnn") as varscope:
+
         parallel_iterations = parallel_iterations or 1
 
         batch_size = inputs.get_shape().as_list()[0]
@@ -68,40 +67,37 @@ def multi_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=Non
             state = cell.zero_state(batch_size, dtype)
 
         # Add padding to X axis, if necessary
-        for axis in range(dimensions):
-            inputs = _patch_padding(inputs, sequence_shape[axis], 1 + axis)
+        inputs = _patch_padding(inputs, sequence_shape[0], 1)
+        # Add padding to Y axis, if necessary
+        inputs = _patch_padding(inputs, sequence_shape[1], 2)
 
         shape = inputs.get_shape().as_list()
 
-        num_steps = [int(shape[1 + axis] / sequence_shape[axis])
-                     for axis in range(dimensions)]
+        num_steps_x, num_steps_y = int(
+            shape[1] / sequence_shape[0]), int(shape[2] / sequence_shape[1])
 
-        total_steps = prod(num_steps)
+        print batch_size, num_steps_x, num_steps_y
+        total_steps = num_steps_x * num_steps_y
 
         # Get the number of features (total number of imput values per step)
-        features = prod(sequence_shape) * prod(shape[3:])
+        features = sequence_shape[0] * sequence_shape[1] * prod(shape[3:])
 
         # Reshape input data to a tensor containing the step indexes and features inputs
         # The batch size is inferred from the tensor size
-        newshape = [batch_size]
-        newshape.extend(num_steps)
-        newshape.append(features)
-        x = tf.reshape(inputs, newshape)
+        x = tf.reshape(
+            inputs, [batch_size, num_steps_x, num_steps_y, features])
 
         # Reverse the selected dimensions
         if reverse_dims is not None:
-            assert len(reverse_dims) is dimensions
+            assert len(reverse_dims) is 2
             # We will not reverse the batch size and the channel
             full_reverse_dims = [False]
             full_reverse_dims.extend(reverse_dims)
             full_reverse_dims.append(False)
             x = tf.reverse(x, dims)
 
-        permutation = range(1, dimensions)
-        permutation.extend([0, dimensions + 1])
-        # Reorder inputs to (num_steps_x, num_steps_y, num_steps_z, ...,
-        # batch_size, features)
-        x = tf.transpose(x, permutation)
+         # Reorder inputs to (num_steps_x, num_steps_y, batch_size, features)
+        x = tf.transpose(x, [1, 2, 0, 3])
         # Reshape to a one dimensional tensor of (num_steps_x * num_steps_y *
         # batch_size , features)
         x = tf.reshape(x, [-1, features])
@@ -182,7 +178,7 @@ def multi_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=Non
         y = tf.reshape(
             outputs, [num_steps_x, num_steps_y, batch_size, outputs.shape[2]])
 
-        # Reorder the dimensions to match the input
+        # Reorder te dimensions to match the input
         y = tf.transpose(y, [2, 0, 1, 3])
         # Reverse if selected
         if full_reverse_dims is not None:
