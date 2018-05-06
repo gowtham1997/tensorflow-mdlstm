@@ -71,7 +71,8 @@ def run(m_id):
     loss = 1e4 * tf.reduce_mean(tf.abs(tf.subtract(y, model_out)))
     grad_update = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
-    sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
+    sess = tf.Session(config=tf.ConfigProto(
+        log_device_placement=False, allow_soft_placement=True))
     sess.run(tf.global_variables_initializer())
 
     train_writer = tf.summary.FileWriter(
