@@ -5,7 +5,126 @@ from tensorflow.python.util import nest
 from tensorflow.contrib.rnn import RNNCell, LSTMStateTuple
 from tensorflow.python.ops.rnn import _best_effort_input_batch_size
 from mdlstm import MDLSTMCell
+import math
 
+
+# Naive loop implementation where there is no parallelization
+# and row-by-row execution
+def naive_loop(cell, num_steps_x, num_steps_y, inputs_ta, parallel_iterations):
+
+    # Function to get the sample skipping one row
+    def get_up(t_, w_):
+        return t_ - tf.constant(w_)
+
+    # Function to get the previous sample
+    def get_last(t_, w_):
+        return t_ - tf.constant(1)
+
+    total_steps = num_steps_x * num_steps_y
+    zero = tf.constant(0)
+
+    # Body of the while loop operation that aplies the MD LSTM
+
+    def loop(time_, outputs_ta_, states_ta_):
+
+        # If the current position is less or equal than the width, we are in the first row
+        # and we need to read the zero state we added in row (num_steps_x*num_steps_y).
+        # If not, get the sample located at a width dstance.
+        state_up = tf.cond(tf.less_equal(time_, tf.constant(num_steps_x)),
+                           lambda: states_ta_.read(total_steps),
+                           lambda: states_ta_.read(get_up(time_, num_steps_x)))
+
+        # If it is the first step we read the zero state if not we read the
+        # inmediate last
+        state_last = tf.cond(tf.less(zero, tf.mod(time_, tf.constant(num_steps_x))),
+                             lambda: states_ta_.read(
+            get_last(time_, num_steps_x)),
+            lambda: states_ta_.read(total_steps))
+
+        # We build the input state in both dimensions
+        current_state = state_up[0], state_last[
+            0], state_up[1], state_last[1]
+        # Now we calculate the output state and the cell output
+        out, state = cell(inputs_ta.read(time_), current_state)
+        # We write the output to the output tensor array
+        outputs_ta_ = outputs_ta_.write(time_, out)
+        # And save the output state to the state tensor array
+        states_ta_ = states_ta_.write(time_, state)
+
+        # Return outputs and incremented time step
+        return time_ + 1, outputs_ta_, states_ta_
+
+    # Loop output condition. The index, given by the time, should be less than the
+    # total number of steps defined within the image
+    def condition(time_, outputs_ta_, states_ta_):
+        return tf.less(time_, tf.constant(total_steps))
+    return condition, loop
+
+# Diagional parallelization
+
+
+def diagonal_loop(cell, num_steps_x, num_steps_y, inputs_ta, parallel_iterations):
+    max_d_step = tf.constant(num_steps_x + num_steps_y - 1)
+
+    tf_num_steps_x = tf.constant(num_steps_x)
+    tf_num_steps_y = tf.constant(num_steps_y)
+    zero = tf.constant(0)
+    one = tf.constant(1)
+    total_steps = tf_num_steps_x * tf_num_steps_y
+
+    def calc_pos(x, y):
+        return y * tf_num_steps_x + x
+
+    def loop(d_step, outputs_ta, states_ta):
+
+        max_t_step = tf.cond(tf.less(d_step, tf_num_steps_y),
+                             lambda: d_step + one, lambda: tf_num_steps_y)
+        t_shift = tf.cond(tf.less(d_step, tf_num_steps_x),
+                          lambda: zero, lambda: d_step - tf_num_steps_x + one)
+
+        def inner_condition(t_step, outputs_ta_, states_ta_):
+            return tf.less(t_step, max_t_step)
+
+        def inner_loop(t_step, outputs_ta_, states_ta_):
+            pos_x = d_step - t_step
+            pos_y = t_step
+            vert_pos = calc_pos(pos_x, pos_y)
+            # If the current position is less or equal than the width, we are in the first row
+            # and we need to read the zero state we added in row (num_steps_x*num_steps_y).
+            # If not, get the sample located at a width dstance.
+            state_top = tf.cond(tf.equal(pos_y, zero),
+                                lambda: states_ta_.read(total_steps),
+                                lambda: states_ta_.read(calc_pos(pos_x, pos_y - one)))
+
+            # If it is the first step we read the zero state if not we read the
+            # inmediate last
+            state_left = tf.cond(tf.equal(pos_x, zero), lambda: states_ta_.read(total_steps),
+                                 lambda: states_ta_.read(calc_pos(pos_x - one, pos_y)))
+
+            # We build the input state in both dimensions
+            current_state = state_top[0], state_left[
+                0], state_top[1], state_left[1]
+
+            # Now we calculate the output state and the cell output
+            out, state = cell(inputs_ta.read(vert_pos), current_state)
+            # We write the output to the output tensor array
+            outputs_ta_ = outputs_ta_.write(vert_pos, out)
+            # And save the output state to the state tensor array
+            states_ta_ = states_ta_.write(vert_pos, state)
+
+            return t_step + 1, outputs_ta_, states_ta_
+        # Run the looped operation
+        _, outputs_ta_, states_ta_ = tf.while_loop(inner_condition, inner_loop, [t_shift, outputs_ta, states_ta],
+                                                   parallel_iterations=parallel_iterations)
+
+        # Return outputs and incremented time step
+        return d_step + 1, outputs_ta_, states_ta_
+
+    # Here, we stop execution after
+    def condition(d_step, outputs_ta_, states_ta_):
+        return tf.less(d_step, max_d_step)
+
+    return condition, loop
 
 # Based on dynamic_rnn in https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/ops/rnn.py
 # as well as
@@ -13,6 +132,7 @@ from mdlstm import MDLSTMCell
 
 
 def two_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=None,
+                        loop_implementation=diagonal_loop,
                         dtype=None, parallel_iterations=None, scope=None, reverse_dims=None):
     """Creates a 2D recurrent neural network specified by 2D RNN `cell`.
     Performs fully dynamic unrolling of `inputs`.
@@ -76,7 +196,6 @@ def two_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=None,
         num_steps_x, num_steps_y = int(
             shape[1] / sequence_shape[0]), int(shape[2] / sequence_shape[1])
 
-        print batch_size, num_steps_x, num_steps_y
         total_steps = num_steps_x * num_steps_y
 
         # Get the number of features (total number of imput values per step)
@@ -119,56 +238,15 @@ def two_dimensional_rnn(cell, inputs, sequence_shape=(2, 2), initial_state=None,
 
         states_ta = states_ta.write(total_steps, state)
 
-        # Function to get the sample skipping one row
-        def get_up(t_, w_):
-            return t_ - tf.constant(w_)
-
-        # Function to get the previous sample
-        def get_last(t_, w_):
-            return t_ - tf.constant(1)
-
         # Controls the initial index
         time = tf.constant(0)
-        zero = tf.constant(0)
 
-        # Body of the while loop operation that aplies the MD LSTM
-        def loop(time_, outputs_ta_, states_ta_):
-
-            # If the current position is less or equal than the width, we are in the first row
-            # and we need to read the zero state we added in row (num_steps_x*num_steps_y).
-            # If not, get the sample located at a width dstance.
-            state_up = tf.cond(tf.less_equal(time_, tf.constant(num_steps_x)),
-                               lambda: states_ta_.read(total_steps),
-                               lambda: states_ta_.read(get_up(time_, num_steps_x)))
-
-            # If it is the first step we read the zero state if not we read the
-            # inmediate last
-            state_last = tf.cond(tf.less(zero, tf.mod(time_, tf.constant(num_steps_x))),
-                                 lambda: states_ta_.read(
-                                     get_last(time_, num_steps_x)),
-                                 lambda: states_ta_.read(total_steps))
-
-            # We build the input state in both dimensions
-            current_state = state_up[0], state_last[
-                0], state_up[1], state_last[1]
-            # Now we calculate the output state and the cell output
-            out, state = cell(inputs_ta.read(time_), current_state)
-            # We write the output to the output tensor array
-            outputs_ta_ = outputs_ta_.write(time_, out)
-            # And save the output state to the state tensor array
-            states_ta_ = states_ta_.write(time_, state)
-
-            # Return outputs and incremented time step
-            return time_ + 1, outputs_ta_, states_ta_
-
-        # Loop output condition. The index, given by the time, should be less than the
-        # total number of steps defined within the image
-        def condition(time_, outputs_ta_, states_ta_):
-            return tf.less(time_, tf.constant(total_steps))
+        condition, loop = loop_implementation(
+            cell, num_steps_x, num_steps_y, inputs_ta, parallel_iterations)
 
         # Run the looped operation
-        result, outputs_ta, states_ta = tf.while_loop(condition, loop, [time, outputs_ta, states_ta],
-                                                      parallel_iterations=parallel_iterations)
+        _, outputs_ta, states_ta = tf.while_loop(condition, loop, [time, outputs_ta, states_ta],
+                                                 parallel_iterations=1)
 
         # Extract the output tensors from the processesd tensor array
         outputs = outputs_ta.stack()

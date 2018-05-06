@@ -3,7 +3,7 @@ from time import time
 
 import sys
 sys.path.insert(0, '../')
-from mdrnn import multi_dimensional_rnn_while_loop
+# from mdrnn import multi_dimensional_rnn_while_loop
 from rnn2d import two_dimensional_rnn
 from lstm2d import TwoDimensionalLSTMCell
 
@@ -62,7 +62,7 @@ def run(m_id):
     else:
         print "Using custom implementation!"
         rnn_out, _ = two_dimensional_rnn(TwoDimensionalLSTMCell(
-            hidden_size), inputs=x, sequence_shape=(1, 1), dtype=tf.float32)
+            hidden_size), inputs=x, sequence_shape=(1, 1), dtype=tf.float32, parallel_iterations=32)
 
     model_out = slim.fully_connected(inputs=rnn_out,
                                      num_outputs=1,
