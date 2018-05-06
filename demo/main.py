@@ -103,4 +103,8 @@ def run(m_id):
 if __name__ == '__main__':
     assert len(sys.argv) == 2, 'Please specify Model 0: LSTM, 1: MD LSTM'
     model_id = int(sys.argv[1])
-    run(model_id)
+    cpu = True
+    device = "/device:CPU:0" if cpu else "/device:GPU:0"
+
+    with tf.device(device):
+        run(model_id)
